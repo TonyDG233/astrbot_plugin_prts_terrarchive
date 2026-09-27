@@ -656,6 +656,9 @@ solutions will be better for different programs; see section 13 for the
 specific requirements.
 
   You should also get your employer (if you work as a programmer) or school,
-if any, to sign a "copyright disclaimer" for the program, if necessary.
-For more information on this, and how to apply and follow the GNU AGPL, see
-<https://www.gnu.org/licenses/>.
+  if any, to sign a "copyright disclaimer" for the program, if necessary.
+  For more information on this, and how to apply and follow the GNU AGPL, see
+  <https://www.gnu.org/licenses/>.
+
+Portions derived from prts-terrarchive (https://github.com/HTian-qwq/prts-terrarchive), MIT License.
+

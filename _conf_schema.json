@@ -1,0 +1,64 @@
+{
+  "enabled_games": {
+    "type": "list",
+    "options": ["arknights", "endfield"],
+    "default": ["arknights", "endfield"],
+    "description": "启用的资料库；只启用的游戏会注册对应索引并在工具中可见"
+  },
+  "releases_dir": {
+    "type": "string",
+    "default": "",
+    "description": "语料包 releases 目录；留空使用 data/plugin_data/<插件名>/releases"
+  },
+  "site_base_url": {
+    "type": "string",
+    "default": "https://prts.chat",
+    "description": "字节回退源站点（可信元数据固定来自 https://prts.chat）"
+  },
+  "download_order": {
+    "type": "list",
+    "options": ["modelscope", "site"],
+    "default": ["modelscope", "site"],
+    "description": "下载源优先级；任一源失败自动切换下一源"
+  },
+  "pinned_release": {
+    "type": "string",
+    "default": "",
+    "description": "固定使用的 release_id；设置且本地已就绪时零联网运行"
+  },
+  "auto_check_update": {
+    "type": "bool",
+    "default": false,
+    "description": "启动后后台检查更新（仅提示，不影响本地检索）"
+  },
+  "auto_install_on_start": {
+    "type": "bool",
+    "default": false,
+    "description": "启动时若未安装语料则自动下载最新版本"
+  },
+  "enable_search_tool": { "type": "bool", "default": true, "description": "注册 prts_search 工具" },
+  "enable_read_tool": { "type": "bool", "default": true, "description": "注册 prts_read 工具" },
+  "enable_timeline_tool": { "type": "bool", "default": true, "description": "注册 prts_timeline 工具" },
+  "enable_i18n_tool": { "type": "bool", "default": true, "description": "注册 prts_i18n 工具" },
+  "inject_entity_context": {
+    "type": "bool",
+    "default": true,
+    "description": "在每轮 LLM 请求前注入 <prts:retrieval-context> 实体提示"
+  },
+  "command_enabled": { "type": "bool", "default": true, "description": "启用 /prts 命令组" },
+  "content_cache_mb": {
+    "type": "int",
+    "default": 64,
+    "description": "正文分片 LRU 缓存上限（MiB）"
+  },
+  "index_cache_mb": {
+    "type": "int",
+    "default": 32,
+    "description": "检索索引分片 LRU 缓存上限（MiB）"
+  },
+  "cloud_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "预留：云端检索默认不启用（v1 未实现）"
+  }
+}

@@ -1,6 +1,22 @@
-name: helloworld # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
-display_name: helloworld # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
-desc: AstrBot 插件示例。 # 插件简短描述
-version: v1.3.0 # 插件版本号。格式：v1.1.1 或者 v1.1
-author: Soulter # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+name: astrbot_plugin_prts_terrarchive
+display_name: PRTS 泰拉档案
+short_desc: 明日方舟 / 终末地本地语料检索（剧情原文、档案、Wiki、年表、多语言）
+desc: |
+  PRTS 泰拉档案 —— 让 LLM 在对话中检索《明日方舟》与《明日方舟：终末地》的本地语料。
+  - 全文/结构化搜索（prts_search）、按关卡/密录/角色资料/标题读取原文（prts_read）
+  - 泰拉年表检索（prts_timeline）、终末地官方多语言原文查询（prts_i18n）
+  - 引用格式固定为“《完整展示标题》第 N 行”，可核验、不泄露内部路径
+  - 语料包版本化：检查更新、下载校验、原子激活、热重载；pin 版本后完全离线
+  数据来源：PRTS.chat 预构建语料包（官方游戏数据、社区审校 Wiki 与年表投影）。
+  语料不随插件分发，请先执行 /prts 更新 下载。
+  项目性质：非官方社区移植项目，是上游 prts-terrarchive（Node.js 版）的 AstrBot / Python 端口，
+  与游戏版权方、PRTS Wiki 及其官方无关。
+  上游项目：https://github.com/HTian-qwq/prts-terrarchive （MIT License）
+version: v0.2.0
+author: TonyDG233
+repo: https://github.com/TonyDG233/astrbot_plugin_prts_terrarchive
+astrbot_version: ">=4.24.2"
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
