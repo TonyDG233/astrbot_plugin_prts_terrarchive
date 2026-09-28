@@ -8,7 +8,7 @@ import re
 # 插件自身版本（对应上游 release-compatibility.js 的 AGENT_VERSION，用于
 # release-manifest.minimum_agent_version 兼容检查）。与上游 package.json 0.2.0 对齐：
 # 含 localization 附件的 release 要求 minimum_agent_version >= 0.2.0。
-AGENT_VERSION = "0.2.3"
+AGENT_VERSION = "0.2.4"
 
 # 契约版本（read.js:20）。
 CONTRACT_VERSION = "prts-corpus-tools-v1"

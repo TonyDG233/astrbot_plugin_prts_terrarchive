@@ -12,7 +12,7 @@ desc: |
   项目性质：非官方社区移植项目，是上游 prts-terrarchive（Node.js 版）的 AstrBot / Python 端口，
   与游戏版权方、PRTS Wiki 及其官方无关。
   上游项目：https://github.com/HTian-qwq/prts-terrarchive （MIT License）
-version: v0.2.3
+version: v0.2.4
 author: TonyDG233
 repo: https://github.com/TonyDG233/astrbot_plugin_prts_terrarchive
 astrbot_version: ">=4.24.2"
