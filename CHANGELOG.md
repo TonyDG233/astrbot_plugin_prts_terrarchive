@@ -37,6 +37,10 @@
 - **Fail-Loud 算法校验**：遇到未知压缩算法、未识别的校验格式或未兼容的索引协议时立即显式中断抛错，严禁静默忽略或降级处理。
 - **原子激活（Atomic Activation）**：语料下载采用临时隔离目录写入与校验，全部通过后原子切换 `current.json` 软链接/指针并热重载内存缓存，保证服务不中断且绝不处于半激活破坏状态。
 
+## [v0.2.2] - 2026-09-28
+
+- **修复 `/prts 状态` 崩溃**：`local_release_status` 的 `packs` 字段原先返回资料包数量（int），状态命令却按列表迭代导致 `TypeError: 'int' object is not iterable`；现改为返回资料包 ID 列表并展示包名，新增回归断言。
+
 ## [v0.2.1] - 2026-09-28
 
 - **ModelScope 元数据回退（海外可用）**：新增 `metadata_source` 配置（`auto`/`site`/`mirror`）。`auto` 下当 prts.chat 网络不可达（如海外 VPS）时自动改用 ModelScope 官方镜像的 `dataset-manifest.json` 逐文件 SHA-256 作为信任锚点，并由各 pack 清单合成 release 摘要后照常原子安装。镜像模式的 `data_version` 为本地按同一内容根公式重算值，官方声明值记录在 `mirror_declared_data_version` 字段。

@@ -199,14 +199,22 @@ async def local_release_status(releases_dir: str) -> dict[str, Any]:
         manifest = await validate_local_release(releases_dir, release_id, verify_hashes=False)
         if isinstance(manifest, dict):
             raw_packs = manifest.get("packs")
-            pack_count = len(raw_packs) if isinstance(raw_packs, list) else 0
+            pack_ids: list[str] = []
+            if isinstance(raw_packs, list):
+                for item in raw_packs:
+                    if isinstance(item, dict):
+                        pack_id = item.get("pack_id") or item.get("packId")
+                    else:
+                        pack_id = item
+                    if pack_id:
+                        pack_ids.append(str(pack_id))
             return {
                 "installed": True,
                 "active_release_id": release_id,
                 "data_version": manifest.get("data_version"),
                 "documents": manifest.get("document_count"),
                 "lines": manifest.get("line_count"),
-                "packs": pack_count,
+                "packs": pack_ids,
                 "compressed_bytes": manifest.get("compressed_size"),
                 "releases_count": releases_count,
             }

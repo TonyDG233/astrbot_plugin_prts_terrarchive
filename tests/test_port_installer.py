@@ -91,6 +91,8 @@ def test_list_local_releases_and_status(fixture_data):
     assert status["installed"] is True
     assert status["active_release_id"] == fixture_data["release_id"]
     assert status["documents"] >= 1
+    assert isinstance(status["packs"], list) and status["packs"], status["packs"]
+    assert all(isinstance(pack, str) for pack in status["packs"])
 
 
 def test_ensure_release_reuses_local_without_network(fixture_data):
