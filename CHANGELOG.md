@@ -37,9 +37,10 @@
 - **Fail-Loud 算法校验**：遇到未知压缩算法、未识别的校验格式或未兼容的索引协议时立即显式中断抛错，严禁静默忽略或降级处理。
 - **原子激活（Atomic Activation）**：语料下载采用临时隔离目录写入与校验，全部通过后原子切换 `current.json` 软链接/指针并热重载内存缓存，保证服务不中断且绝不处于半激活破坏状态。
 
-### 修复与增强（2026-09-28）
+## [v0.2.1] - 2026-09-28
 
 - **ModelScope 元数据回退（海外可用）**：新增 `metadata_source` 配置（`auto`/`site`/`mirror`）。`auto` 下当 prts.chat 网络不可达（如海外 VPS）时自动改用 ModelScope 官方镜像的 `dataset-manifest.json` 逐文件 SHA-256 作为信任锚点，并由各 pack 清单合成 release 摘要后照常原子安装。镜像模式的 `data_version` 为本地按同一内容根公式重算值，官方声明值记录在 `mirror_declared_data_version` 字段。
+- **auto 回退触发条件扩展**：prts.chat 返回 403/404、超时、连接失败或非 JSON 拦截页时均会回退 ModelScope 镜像，并在 `fallback_reason` 中记录原始错误码。
 - **自动更新**：新增 `auto_update` 子选项。开启后后台按 6 小时周期检查，检测到新语料会自动下载并激活，开始/完成/失败状态写入 AstrBot 主日志；无需另开 `auto_check_update`。
 - **插件数据随卸载清理**：语料目录改用插件目录名（`root_dir_name`）作为 `data/plugin_data/<目录名>/releases`，与 AstrBot「卸载时清除插件数据」的删除路径一致（自定义 `releases_dir` 不受管理，需手动清理）。
 - **工具注册归属修复**：工具改由插件主模块内定义的 `FunctionTool` 子类注册，并在启动时清理同名残留，修复卸载后工具残留与重复挂载告警。

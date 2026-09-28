@@ -1671,6 +1671,17 @@ async def resolve_mirror_current_release(
         return res
 
 
+# auto 模式在 prts.chat 侧出现这些故障时回退 ModelScope 镜像：
+# 网络不可达（network 标记）、超时/连接失败（DOWNLOAD_FAILED）、
+# 被 WAF/地域策略拒绝（ACCESS_DENIED）、路径不可用（RELEASE_NOT_FOUND）、
+# 返回非 JSON（INVALID_MANIFEST，例如拦截页）。数据本身不可信时不回退。
+_AUTO_FALLBACK_CODES = frozenset(["DOWNLOAD_FAILED", "ACCESS_DENIED", "RELEASE_NOT_FOUND", "INVALID_MANIFEST"])
+
+
+def _should_fallback_to_mirror(err: InstallerFault) -> bool:
+    return bool(getattr(err, "network", False)) or err.code in _AUTO_FALLBACK_CODES
+
+
 async def resolve_trusted_current_release(
     session: aiohttp.ClientSession | None = None,
     site_base_url: str | None = None,
@@ -1690,13 +1701,13 @@ async def resolve_trusted_current_release(
     try:
         return await _resolve_site_current_release(session=session, site_base_url=site_base_url, signal=signal)
     except InstallerFault as err:
-        if source == "auto" and getattr(err, "network", False):
+        if source == "auto" and _should_fallback_to_mirror(err):
             return await resolve_mirror_current_release(
                 session=session,
                 signal=signal,
                 release_id=release_id,
                 enabled_games=enabled_games,
-                fallback_reason=str(err),
+                fallback_reason=f"{err.code}: {err}",
             )
         raise
 

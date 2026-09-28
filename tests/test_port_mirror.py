@@ -213,3 +213,67 @@ def test_mirror_resolver_rejects_hash_mismatch(fixture_data, tmp_path, monkeypat
             await runner.cleanup()
 
     run(scenario())
+
+def test_auto_falls_back_when_site_blocked(fixture_data, monkeypatch):
+    """auto 模式：prts.chat 返回 403（WAF/地域拦截）时必须回退 ModelScope。"""
+    release_id = fixture_data["release_id"]
+    release_dir = os.path.join(fixture_data["releases_dir"], release_id)
+    data_version = fixture_data["data_version"]
+    repo_packs = {
+        installer_module.MODELSCOPE_REPOS["arknights"]: ARK_PACKS,
+        installer_module.MODELSCOPE_REPOS["endfield"]: EF_PACKS,
+    }
+    datasets = {
+        repo: _dataset_manifest(release_dir, release_id, data_version, packs)
+        for repo, packs in repo_packs.items()
+    }
+
+    async def site_handler(_request):
+        return web.Response(status=403, text="blocked by waf")
+
+    async def tree_handler(_request):
+        return web.json_response(
+            {"Code": 200, "Data": {"Files": [{"Name": release_id, "Type": "tree", "CommittedDate": 1}]}}
+        )
+
+    async def resolver_handler(request):
+        parts = request.match_info["tail"].split("/")
+        repo_name = f"{parts[0]}/{parts[1]}"
+        if repo_name not in datasets:
+            raise web.HTTPNotFound()
+        tail = "/".join(parts[6:])
+        if tail == "dataset-manifest.json":
+            return web.json_response(datasets[repo_name])
+        full = os.path.join(release_dir, *tail.split("/"))
+        if not os.path.isfile(full):
+            raise web.HTTPNotFound()
+        return web.FileResponse(full)
+
+    app = web.Application()
+    app.router.add_get("/api/agent/data/releases/current", site_handler)
+    app.router.add_get("/api/v1/datasets/{tail:.*}", tree_handler)
+    app.router.add_get("/datasets/{tail:.*}", resolver_handler)
+
+    async def scenario():
+        import aiohttp
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = runner.addresses[0][1]
+        monkeypatch.setattr(installer_module, "MODELSCOPE_BASE_URL", f"http://127.0.0.1:{port}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                snapshot = await installer_module.resolve_trusted_current_release(
+                    session=session,
+                    metadata_source="auto",
+                    site_base_url=f"http://127.0.0.1:{port}",
+                    release_id=release_id,
+                )
+                assert snapshot["mirror_snapshot"] is True
+                assert "ACCESS_DENIED" in snapshot.get("fallback_reason", "")
+        finally:
+            await runner.cleanup()
+
+    run(scenario())
