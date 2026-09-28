@@ -2,6 +2,28 @@
 
 所有重要变更均记录于此。
 
+## [v0.2.3] - 2026-09-28
+
+- **整数参数归一化（修复模型调用兼容性）**：`prts_read` 此前用严格 `isinstance(int)` 校验，工具链把 JSON 数字表示为 `101.0` 之类的整值浮点或数字字符串时会被拒绝，导致模型反复重试失败；现接受整值 `float` 与纯数字字符串，仅拒绝非整值（如 `101.5`）与布尔值。
+- **错误信息改用模型可见字段名**：`start_line`/`center_line` 报错显示为 `line`，`limits.max_lines`/`limits.max_chars` 显示为 `max_lines`/`max_chars`，避免模型按内部字段名纠错而无效重试。
+- **短字面量扫描按候选分片收窄（低配 VPS 性能优化）**：1-2 字查询（如“魔王”）的冷启动全语料扫描改为只扫描包含当前过滤候选文档的分片，结果语义不变（调用方仍与候选集求交），单核冷启动耗时大幅下降；扫描缓存键加入分片范围指纹避免污染。
+- **可配置搜索超时**：新增 `search_timeout_seconds` 配置（默认 60 秒，范围 10-600）；单核或低配 VPS 冷启动较慢时可调大，运行时会覆盖内置 15 秒预算（上限 600 秒）。
+
+## [v0.2.2] - 2026-09-28
+
+- **修复 `/prts 状态` 崩溃**：`local_release_status` 的 `packs` 字段原先返回资料包数量（int），状态命令却按列表迭代导致 `TypeError: 'int' object is not iterable`；现改为返回资料包 ID 列表并展示包名，新增回归断言。
+
+## [v0.2.1] - 2026-09-28
+
+- **ModelScope 元数据回退（海外可用）**：新增 `metadata_source` 配置（`auto`/`site`/`mirror`）。`auto` 下当 prts.chat 网络不可达（如海外 VPS）时自动改用 ModelScope 官方镜像的 `dataset-manifest.json` 逐文件 SHA-256 作为信任锚点，并由各 pack 清单合成 release 摘要后照常原子安装。镜像模式的 `data_version` 为本地按同一内容根公式重算值，官方声明值记录在 `mirror_declared_data_version` 字段。
+- **auto 回退触发条件扩展**：prts.chat 返回 403/404、超时、连接失败或非 JSON 拦截页时均会回退 ModelScope 镜像，并在 `fallback_reason` 中记录原始错误码。
+- **自动更新**：新增 `auto_update` 子选项。开启后后台按 6 小时周期检查，检测到新语料会自动下载并激活，开始/完成/失败状态写入 AstrBot 主日志；无需另开 `auto_check_update`。
+- **插件数据随卸载清理**：语料目录改用插件目录名（`root_dir_name`）作为 `data/plugin_data/<目录名>/releases`，与 AstrBot「卸载时清除插件数据」的删除路径一致（自定义 `releases_dir` 不受管理，需手动清理）。
+- **工具注册归属修复**：工具改由插件主模块内定义的 `FunctionTool` 子类注册，并在启动时清理同名残留，修复卸载后工具残留与重复挂载告警。
+- **下载诊断增强**：错误信息附带失败阶段与完整 URL；可信元数据请求失败自动重试一次；两个下载源均失败时聚合展示各自原因。
+- **代理环境支持**：下载会话启用 `trust_env`，自动继承服务器 `HTTP(S)_PROXY`。
+- 测试：新增 `tests/test_port_mirror.py`（本地 mock 镜像端到端安装与哈希不一致拒绝），合计 102 项 pytest 全通过。
+
 ## [v0.2.0] - 2026-09-27
 
 ### 新增
@@ -36,18 +58,3 @@
 - **路径穿越防御（Path Traversal Guard）**：解压及资源读取全程校验目标路径，严格限制在 release 目录边界内，禁止任何 `..` 越界写入或读取。
 - **Fail-Loud 算法校验**：遇到未知压缩算法、未识别的校验格式或未兼容的索引协议时立即显式中断抛错，严禁静默忽略或降级处理。
 - **原子激活（Atomic Activation）**：语料下载采用临时隔离目录写入与校验，全部通过后原子切换 `current.json` 软链接/指针并热重载内存缓存，保证服务不中断且绝不处于半激活破坏状态。
-
-## [v0.2.2] - 2026-09-28
-
-- **修复 `/prts 状态` 崩溃**：`local_release_status` 的 `packs` 字段原先返回资料包数量（int），状态命令却按列表迭代导致 `TypeError: 'int' object is not iterable`；现改为返回资料包 ID 列表并展示包名，新增回归断言。
-
-## [v0.2.1] - 2026-09-28
-
-- **ModelScope 元数据回退（海外可用）**：新增 `metadata_source` 配置（`auto`/`site`/`mirror`）。`auto` 下当 prts.chat 网络不可达（如海外 VPS）时自动改用 ModelScope 官方镜像的 `dataset-manifest.json` 逐文件 SHA-256 作为信任锚点，并由各 pack 清单合成 release 摘要后照常原子安装。镜像模式的 `data_version` 为本地按同一内容根公式重算值，官方声明值记录在 `mirror_declared_data_version` 字段。
-- **auto 回退触发条件扩展**：prts.chat 返回 403/404、超时、连接失败或非 JSON 拦截页时均会回退 ModelScope 镜像，并在 `fallback_reason` 中记录原始错误码。
-- **自动更新**：新增 `auto_update` 子选项。开启后后台按 6 小时周期检查，检测到新语料会自动下载并激活，开始/完成/失败状态写入 AstrBot 主日志；无需另开 `auto_check_update`。
-- **插件数据随卸载清理**：语料目录改用插件目录名（`root_dir_name`）作为 `data/plugin_data/<目录名>/releases`，与 AstrBot「卸载时清除插件数据」的删除路径一致（自定义 `releases_dir` 不受管理，需手动清理）。
-- **工具注册归属修复**：工具改由插件主模块内定义的 `FunctionTool` 子类注册，并在启动时清理同名残留，修复卸载后工具残留与重复挂载告警。
-- **下载诊断增强**：错误信息附带失败阶段与完整 URL；可信元数据请求失败自动重试一次；两个下载源均失败时聚合展示各自原因。
-- **代理环境支持**：下载会话启用 `trust_env`，自动继承服务器 `HTTP(S)_PROXY`。
-- 测试：新增 `tests/test_port_mirror.py`（本地 mock 镜像端到端安装与哈希不一致拒绝），合计 102 项 pytest 全通过。

@@ -80,6 +80,7 @@ PRTS 泰拉档案（`astrbot_plugin_prts_terrarchive`）是面向 [AstrBot](http
 | `auto_check_update` | bool | `false` | 启动后是否在后台静默检查远端是否有新版本语料（仅提示，不自动下载与切换）。 |
 | `auto_update` | bool | `false` | 检测到新语料时自动下载并激活（后台按 6 小时周期检查）；开始/完成/失败状态写入 AstrBot 主日志。开启后无需另开 `auto_check_update`。 |
 | `auto_install_on_start`| bool | `false` | 启动时若检测到本地未安装任何语料包，是否自动下载并安装最新版本。 |
+| `search_timeout_seconds` | int | `60` | 单次 `prts_search` 的时间预算（秒，范围 10-600）。单核或低配 VPS 冷启动扫描较慢时可调大（上限 600 秒）。 |
 | `enable_search_tool` | bool | `true` | 是否向 LLM 注册 `prts_search` 检索工具。 |
 | `enable_read_tool` | bool | `true` | 是否向 LLM 注册 `prts_read` 阅读工具。 |
 | `enable_timeline_tool` | bool | `true` | 是否向 LLM 注册 `prts_timeline` 泰拉年表工具。 |
@@ -157,7 +158,7 @@ A: 说明本地尚未下载语料包。请先使用管理员账号发送命令 `
 A: 插件默认配置了双下载源。若 ModelScope 访问不稳定，可在管理台调整 `download_order` 配置或检查服务器到 `prts.chat` 的网络连通性。也可以手动下载语料压缩包解压至数据目录。海外服务器若无法访问 `prts.chat` 域名，保持 `metadata_source` 为默认 `auto` 即可自动改用 ModelScope 元数据回退（也可显式设为 `mirror`）。
 
 ### Q3: 磁盘空间与内存占用如何？
-A: 完整语料包（明日方舟 + 终末地双游戏）占用磁盘约 300MB ~ 800MB（根据是否包含多语言包而定）。运行期正文与索引均采用 LRU 内存分片缓存，分别受 `content_cache_mb`（默认 64MB）与 `index_cache_mb`（默认 32MB）严格限制，对小内存服务器极其友好。
+A: 完整语料包（明日方舟 + 终末地双游戏）占用磁盘约 300MB ~ 800MB（根据是否包含多语言包而定）。运行期正文与索引均采用 LRU 内存分片缓存，分别受 `content_cache_mb`（默认 64MB）与 `index_cache_mb`（默认 32MB）严格限制，对小内存服务器极其友好。若在单核低配 VPS 上首次检索大范围短词偏慢，可调大 `search_timeout_seconds`（默认 60 秒）。
 
 ---
 

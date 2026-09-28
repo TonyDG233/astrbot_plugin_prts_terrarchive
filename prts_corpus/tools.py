@@ -352,6 +352,18 @@ def _fix_continuation(store, response: dict, projected: dict) -> None:
 # ---- 各工具执行体 ----
 
 
+def _search_runtime(plugin) -> dict:
+    """按插件配置生成搜索运行时参数（单核 VPS 可调大 search_timeout_seconds）。"""
+    runtime: dict[str, Any] = {"signal": None}
+    try:
+        seconds = float((getattr(plugin, "settings", None) or {}).get("search_timeout_seconds") or 0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if seconds > 0:
+        runtime["timeout_ms"] = seconds * 1000.0
+    return runtime
+
+
 async def _handle_search(plugin, event, **raw_args) -> str:
     missing = await _ensure_store(plugin)
     if missing:
@@ -364,7 +376,7 @@ async def _handle_search(plugin, event, **raw_args) -> str:
             return "[prts_search:error] code=INVALID_REQUEST\n指定的资料库未启用（" + "、".join(enabled) + "）"
     try:
         await _maybe_note_search(plugin, event, args)
-        value = await execute_search(plugin.store, args, {"signal": None})
+        value = await execute_search(plugin.store, args, _search_runtime(plugin))
     except ContractError as error:
         return f"[prts_search:error] code={error.code} retryable={error.retryable}\n{error.message}"
     except Exception as error:

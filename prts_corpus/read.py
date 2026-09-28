@@ -62,12 +62,39 @@ def _is_aborted(runtime: dict | None) -> bool:
     return bool(getattr(signal, "aborted", False))
 
 
+_PUBLIC_FIELD_NAMES = {
+    "start_line": "line",
+    "center_line": "line",
+    "start_position": "position",
+    "limits.max_lines": "max_lines",
+    "limits.max_chars": "max_chars",
+}
+
+
 def _require_int(value, *, minimum: int, maximum: int, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ContractError("INVALID_REQUEST", f"{field} must be an integer")
-    if value < minimum or value > maximum:
-        raise ContractError("INVALID_REQUEST", f"{field} must be within [{minimum}, {maximum}]")
-    return value
+    """归一化整数值参数。
+
+    工具调用链常把 JSON 数字表示为 double（如 101.0），部分宿主传数字字符串，
+    语义上仍是整数，必须接受；只有真正非整数（101.5、布尔、乱码）才拒绝。
+    """
+    public_field = _PUBLIC_FIELD_NAMES.get(field, field)
+    if isinstance(value, bool):
+        number = None
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and value.is_integer():
+        number = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        number = int(value.strip())
+    else:
+        number = None
+    if number is None:
+        raise ContractError("INVALID_REQUEST", f"{public_field} must be an integer")
+    if number < minimum or number > maximum:
+        raise ContractError(
+            "INVALID_REQUEST", f"{public_field} must be within [{minimum}, {maximum}]"
+        )
+    return number
 
 
 def _require_id_string(value, field: str) -> str:
@@ -219,8 +246,12 @@ def normalize_read_request(raw: dict) -> tuple[dict, int | None]:
                 )
             selection = {
                 "mode": "around",
-                "before_lines": selection_raw.get("before_lines", 3),
-                "after_lines": selection_raw.get("after_lines", 3),
+                "before_lines": _require_int(
+                    selection_raw.get("before_lines", 3), minimum=0, maximum=100, field="before_lines"
+                ),
+                "after_lines": _require_int(
+                    selection_raw.get("after_lines", 3), minimum=0, maximum=100, field="after_lines"
+                ),
             }
         else:
             # document_id：center_line 必填；display_title：center_line 可选（执行时缺失报错）
@@ -229,16 +260,22 @@ def normalize_read_request(raw: dict) -> tuple[dict, int | None]:
                     "INVALID_REQUEST",
                     "around with document_id/document_uid locator requires center_line",
                 )
+            center_line = None
             if selection_raw.get("center_line") is not None:
-                _require_int(
+                center_line = _require_int(
                     selection_raw["center_line"], minimum=1, maximum=10**9, field="center_line"
                 )
-            selection = {"mode": "around", "before_lines": selection_raw.get("before_lines", 3),
-                         "after_lines": selection_raw.get("after_lines", 3)}
-            if selection_raw.get("center_line") is not None:
-                selection["center_line"] = selection_raw["center_line"]
-        _require_int(selection["before_lines"], minimum=0, maximum=100, field="before_lines")
-        _require_int(selection["after_lines"], minimum=0, maximum=100, field="after_lines")
+            selection = {
+                "mode": "around",
+                "before_lines": _require_int(
+                    selection_raw.get("before_lines", 3), minimum=0, maximum=100, field="before_lines"
+                ),
+                "after_lines": _require_int(
+                    selection_raw.get("after_lines", 3), minimum=0, maximum=100, field="after_lines"
+                ),
+            }
+            if center_line is not None:
+                selection["center_line"] = center_line
     elif mode == "range":
         if has_stream_locator:
             raise ContractError("INVALID_REQUEST", "range mode requires a document locator")
@@ -327,11 +364,19 @@ def normalize_read_request(raw: dict) -> tuple[dict, int | None]:
     if not isinstance(limits_raw, dict):
         raise ContractError("INVALID_REQUEST", "limits must be an object")
     limits = {
-        "max_lines": limits_raw.get("max_lines", DEFAULT_READ_MAX_LINES),
-        "max_chars": limits_raw.get("max_chars", DEFAULT_READ_MAX_CHARS),
+        "max_lines": _require_int(
+            limits_raw.get("max_lines", DEFAULT_READ_MAX_LINES),
+            minimum=1,
+            maximum=MAX_READ_MAX_LINES,
+            field="limits.max_lines",
+        ),
+        "max_chars": _require_int(
+            limits_raw.get("max_chars", DEFAULT_READ_MAX_CHARS),
+            minimum=100,
+            maximum=MAX_READ_MAX_CHARS,
+            field="limits.max_chars",
+        ),
     }
-    _require_int(limits["max_lines"], minimum=1, maximum=MAX_READ_MAX_LINES, field="limits.max_lines")
-    _require_int(limits["max_chars"], minimum=100, maximum=MAX_READ_MAX_CHARS, field="limits.max_chars")
 
     normalized = {
         "intent_id": intent_id_checked,
@@ -1514,6 +1559,21 @@ async def model_read_to_contract(store, args: dict, enabled_games: list[str]) ->
             if error.code == "DOCUMENT_NOT_FOUND":
                 raise
             raise ContractError(error.code or "DOCUMENT_AMBIGUOUS", error.message) from None
+        position_val = None
+        if args.get("position") is not None:
+            position_val = _require_int(
+                args["position"], minimum=1, maximum=10**9, field="position"
+            )
+        max_lines_val = None
+        if args.get("max_lines") is not None:
+            max_lines_val = _require_int(
+                args["max_lines"], minimum=1, maximum=MAX_READ_MAX_LINES, field="limits.max_lines"
+            )
+        max_chars_val = None
+        if args.get("max_chars") is not None:
+            max_chars_val = _require_int(
+                args["max_chars"], minimum=100, maximum=MAX_READ_MAX_CHARS, field="limits.max_chars"
+            )
         contract = {
             "locator": (
                 {"document_uid": str(args.get("document_uid")).strip()}
@@ -1523,12 +1583,12 @@ async def model_read_to_contract(store, args: dict, enabled_games: list[str]) ->
             "selection": {
                 "mode": expected_mode,
                 "cursor": None,
-                **({"start_position": args["position"]} if args.get("position") is not None else {}),
+                **({"start_position": position_val} if position_val is not None else {}),
                 **({"content_types": args["content_types"]} if args.get("content_types") is not None else {}),
             },
             "limits": {
-                **({"max_lines": args["max_lines"]} if args.get("max_lines") is not None else {}),
-                **({"max_chars": args["max_chars"]} if args.get("max_chars") is not None else {}),
+                **({"max_lines": max_lines_val} if max_lines_val is not None else {}),
+                **({"max_chars": max_chars_val} if max_chars_val is not None else {}),
             },
         }
         if expected_data_version:
@@ -1575,13 +1635,14 @@ async def model_read_to_contract(store, args: dict, enabled_games: list[str]) ->
             raise ContractError(
                 "INVALID_REQUEST", "干员密录定位必须同时提供 character_name 和 record_name"
             )
-        if args.get("segment") is not None and (
-            not isinstance(args["segment"], int) or isinstance(args["segment"], bool) or args["segment"] < 1
-        ):
-            raise ContractError("INVALID_REQUEST", "segment 必须是从 1 开始的整数")
+        segment_val = None
+        if args.get("segment") is not None:
+            segment_val = _require_int(
+                args["segment"], minimum=1, maximum=10**9, field="segment"
+            )
         try:
             record = await store.get_operator_record(
-                character_name, record_name, args.get("segment")
+                character_name, record_name, segment_val
             )
         except ContractError as error:
             raise ContractError(error.code or "DOCUMENT_AMBIGUOUS", error.message) from None
@@ -1589,7 +1650,7 @@ async def model_read_to_contract(store, args: dict, enabled_games: list[str]) ->
             raise ContractError(
                 "DOCUMENT_NOT_FOUND",
                 f"本地资料包中找不到干员“{character_name}”的密录“{record_name}”"
-                + (f"第 {args['segment']} 段" if args.get("segment") else ""),
+                + (f"第 {segment_val} 段" if segment_val else ""),
             )
         locator = {"document_id": record["record"]["document"]["document_id"]}
     elif has_material_locator:
@@ -1628,9 +1689,10 @@ async def model_read_to_contract(store, args: dict, enabled_games: list[str]) ->
     if section and not has_title:
         raise ContractError("INVALID_REQUEST", "section 只能与 title 定位器一起使用")
     natural_document_locator = has_document_uid or has_stage_locator or has_record_locator or has_material_locator
+    has_line = args.get("line") is not None
     mode = args.get("mode") or (
         "section" if section
-        else "around" if isinstance(args.get("line"), int) and not isinstance(args.get("line"), bool)
+        else "around" if has_line
         else "document" if natural_document_locator
         else ""
     )
@@ -1641,33 +1703,62 @@ async def model_read_to_contract(store, args: dict, enabled_games: list[str]) ->
         )
     if mode not in ("around", "section", "document"):
         raise ContractError("INVALID_REQUEST", "mode 仅支持 document；line/section 会自动选择模式")
-    if mode == "around" and not isinstance(args.get("line"), int):
+    if mode == "around" and not has_line:
         raise ContractError("INVALID_REQUEST", "around 模式必须提供整数 line")
     if mode == "section" and not section:
         raise ContractError("INVALID_REQUEST", "section 模式必须提供 section")
     if section and mode != "section":
         raise ContractError("INVALID_REQUEST", "section 只能与 mode=section 一起使用")
+
+    line_num: int | None = None
+    if has_line:
+        line_num = _require_int(args["line"], minimum=1, maximum=10**9, field="line")
+
     if mode == "document":
         selection = {
             "mode": mode,
             "cursor": None,
-            **({"start_line": args["line"]} if args.get("line") is not None else {}),
+            **({"start_line": line_num} if line_num is not None else {}),
         }
     elif mode == "section":
         selection = {"mode": mode, "section": section}
     else:
         selection = {
             "mode": "around",
-            "center_line": args.get("line"),
-            **({"before_lines": args["before"]} if args.get("before") is not None else {}),
-            **({"after_lines": args["after"]} if args.get("after") is not None else {}),
+            "center_line": line_num,
+            **(
+                {"before_lines": _require_int(args["before"], minimum=0, maximum=100, field="before_lines")}
+                if args.get("before") is not None
+                else {}
+            ),
+            **(
+                {"after_lines": _require_int(args["after"], minimum=0, maximum=100, field="after_lines")}
+                if args.get("after") is not None
+                else {}
+            ),
         }
     contract = {
         "locator": locator,
         "selection": selection,
         "limits": {
-            **({"max_lines": args["max_lines"]} if args.get("max_lines") is not None else {}),
-            **({"max_chars": args["max_chars"]} if args.get("max_chars") is not None else {}),
+            **(
+                {
+                    "max_lines": _require_int(
+                        args["max_lines"], minimum=1, maximum=MAX_READ_MAX_LINES, field="limits.max_lines"
+                    )
+                }
+                if args.get("max_lines") is not None
+                else {}
+            ),
+            **(
+                {
+                    "max_chars": _require_int(
+                        args["max_chars"], minimum=100, maximum=MAX_READ_MAX_CHARS, field="limits.max_chars"
+                    )
+                }
+                if args.get("max_chars") is not None
+                else {}
+            ),
         },
     }
     if expected_data_version:

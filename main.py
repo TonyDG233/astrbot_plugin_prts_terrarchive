@@ -64,6 +64,7 @@ DEFAULT_SETTINGS = {
     "auto_check_update": False,
     "auto_update": False,
     "auto_install_on_start": False,
+    "search_timeout_seconds": 60,
     "enable_search_tool": True,
     "enable_read_tool": True,
     "enable_timeline_tool": True,
@@ -118,6 +119,12 @@ def _normalize_settings(config) -> dict:
         settings["metadata_source"] = "auto"
     settings["pinned_release"] = str(settings["pinned_release"] or "").strip()
     settings["releases_dir"] = str(settings["releases_dir"] or "").strip()
+    try:
+        settings["search_timeout_seconds"] = max(
+            10, min(600, int(float(settings["search_timeout_seconds"])))
+        )
+    except (TypeError, ValueError):
+        settings["search_timeout_seconds"] = DEFAULT_SETTINGS["search_timeout_seconds"]
     for key in (
         "auto_check_update", "auto_update", "auto_install_on_start", "enable_search_tool", "enable_read_tool",
         "enable_timeline_tool", "enable_i18n_tool", "inject_entity_context", "command_enabled",

@@ -1277,7 +1277,13 @@ async def candidate_document_ids(
         short_lookup = getattr(store, "find_documents_by_short_literal", None)
         if short_lookup:
             try:
-                indexed = await short_lookup(request["query"], signal=signal, deadline=deadline, pack_ids=scoped_pack_ids)
+                indexed = await short_lookup(
+                    request["query"],
+                    signal=signal,
+                    deadline=deadline,
+                    pack_ids=scoped_pack_ids,
+                    document_ids=scoped_ids,
+                )
             except TypeError:
                 indexed = await short_lookup(request["query"])
 
@@ -1817,13 +1823,21 @@ async def execute_search(store: Any, args: dict[str, Any], runtime: dict[str, An
 
     deadline = float("inf")
     snapshot = None
+    timeout_ms = runtime.get("timeout_ms")
+    try:
+        timeout_ms = float(timeout_ms)
+    except (TypeError, ValueError):
+        timeout_ms = float(SEARCH_TIMEOUT_MS)
+    if not (timeout_ms > 0):
+        timeout_ms = float(SEARCH_TIMEOUT_MS)
+    timeout_ms = min(timeout_ms, 600_000.0)
     try:
         assert_search_active(signal, deadline)
         await store.ready()
         if getattr(store, "data_version", None) is None:
             raise ContractError("PACKAGE_NOT_INSTALLED", LOCAL_CORPUS_MISSING_MESSAGE, retryable=False)
         snapshot = corpus_version_snapshot(store)
-        deadline = (time.time() * 1000.0) + SEARCH_TIMEOUT_MS
+        deadline = (time.time() * 1000.0) + timeout_ms
         assert_search_active(signal, deadline)
 
         normalized = normalized_request(args)

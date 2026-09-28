@@ -144,3 +144,12 @@ def test_project_search_returns_text(store):
     value = run(search_module.execute_search(store, {"query": "凯尔希"}, {"signal": None}))
     projected = search_module.render_search({"query": "凯尔希"}, value)
     assert isinstance(projected, str) and projected.strip()
+
+def test_search_timeout_runtime_override(store):
+    """runtime.timeout_ms 覆盖内置预算；极小预算必须快速返回 TIMEOUT。"""
+    value = run(search_module.execute_search(
+        store, {"query": "凯尔希"}, {"signal": None, "timeout_ms": 0.001}
+    ))
+    assert value["status"] == "error"
+    assert value["error"]["code"] == "TIMEOUT"
+    assert value["error"]["retryable"] is True

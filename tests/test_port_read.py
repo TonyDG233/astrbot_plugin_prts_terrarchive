@@ -213,3 +213,28 @@ def test_evidence_resets_on_data_version_change():
     )
     assert after["reused_ranges"] == []
     assert after["drop"] is False
+
+def test_integral_float_and_string_integers_accepted(store, fixture_data):
+    """工具链常把 JSON 整数传成 101.0 或 "101"，必须归一化接受。"""
+    story_title = fixture_data["expected"]["titles"]["story"]
+    contract = _contract(store, {"title": story_title, "line": 3.0, "max_lines": "50"})
+    value = _execute(store, contract)
+    assert value["status"] == "ok"
+    assert value["normalized_request"]["selection"]["center_line"] == 3
+    assert value["normalized_request"]["limits"]["max_lines"] == 50
+    assert value["page"]["limit"] == 50
+
+    contract_doc = _contract(store, {"title": story_title, "line": "3", "mode": "document", "max_lines": 50.0})
+    value_doc = _execute(store, contract_doc)
+    assert value_doc["status"] == "ok"
+    assert value_doc["selection"]["line_start"] == 3
+    assert value_doc["normalized_request"]["selection"]["start_line"] == 3
+    assert value_doc["normalized_request"]["limits"]["max_lines"] == 50
+
+
+def test_non_integral_float_rejected_with_public_field_name(store, fixture_data):
+    story_title = fixture_data["expected"]["titles"]["story"]
+    with pytest.raises(ContractError) as excinfo:
+        _contract(store, {"title": story_title, "line": 2.5})
+    assert excinfo.value.code == "INVALID_REQUEST"
+    assert "line must be an integer" in excinfo.value.message

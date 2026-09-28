@@ -61,7 +61,7 @@ Class CorpusStore:
 - def supports_ngram_size(self, size: int, pack_ids: list[str] | None = None) -> bool (alias: supportsNgramSize)
 - async def find_documents_by_ngrams(self, trigrams: list[str], signal=None, deadline=float("inf"), pack_ids: list[str] | None = None) -> list[str] | None (alias: findDocumentsByNgrams)
 - async def find_documents_by_trigrams(self, trigrams: list[str], runtime=None, **kwargs) -> list[str] | None (alias: findDocumentsByTrigrams)
-- async def find_documents_by_short_literal(self, value: str, signal=None, deadline=float("inf"), pack_ids: list[str] | None = None) -> list[str] | None (alias: findDocumentsByShortLiteral)
+- async def find_documents_by_short_literal(self, value: str, signal=None, deadline=float("inf"), pack_ids: list[str] | None = None, document_ids: list[str] | None = None) -> list[str] | None (alias: findDocumentsByShortLiteral)
 - async def iterate_documents(self, document_ids: list[str] | None = None, predicate=None) (aliases: iterateDocuments, iter_search_documents)
 """
 
@@ -1696,8 +1696,13 @@ class CorpusStore:
         signal=None,
         deadline: float = float("inf"),
         pack_ids: list[str] | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[str] | None:
-        """为 1—2 个无大小写字符的字面量提供 grep 式候选预筛。"""
+        """为 1—2 个无大小写字符的字面量提供 grep 式候选预筛。
+
+        document_ids 给定时只扫描包含这些文档的分片：调用方随后会把结果与候选集
+        求交，语义不变，但冷启动扫描范围可缩小到少量分片。
+        """
         query = str(value if value is not None else "")
         characters = list(query)
         if (
@@ -1718,8 +1723,25 @@ class CorpusStore:
         if not entries:
             return []
 
+        allowed_shards: set[tuple[str, str]] | None = None
+        scope_suffix = ""
+        if document_ids is not None:
+            allowed_shards = set()
+            for document_id in document_ids:
+                location = self.documents.get(document_id)
+                if not location:
+                    continue
+                location_pack = str(location.get("pack_id") or "")
+                location_shard = str(location.get("shard_path") or "")
+                if location_pack and location_shard:
+                    allowed_shards.add((location_pack, location_shard))
+            if not allowed_shards:
+                return []
+            fingerprint = "\0".join(sorted(f"{p}:{s}" for p, s in allowed_shards))
+            scope_suffix = "\x02" + hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:16]
+
         sorted_pack_ids = sorted(p[0] for p in entries)
-        cache_key = f"{chr(0).join(sorted_pack_ids)}\x01{query}"
+        cache_key = f"{chr(0).join(sorted_pack_ids)}\x01{query}{scope_suffix}"
 
         self._assert_scan_active(signal, deadline, self._generation)
         cached = self._short_literal_cache_hit(cache_key)
@@ -1752,6 +1774,11 @@ class CorpusStore:
             for pack_id, manifest in entries:
                 self._assert_scan_active(signal, deadline, generation)
                 for descriptor in manifest.get("shards") or []:
+                    if allowed_shards is not None and (
+                        pack_id,
+                        str(descriptor.get("path") or ""),
+                    ) not in allowed_shards:
+                        continue
                     jobs.append({"pack_id": pack_id, "descriptor": descriptor})
 
             found = []

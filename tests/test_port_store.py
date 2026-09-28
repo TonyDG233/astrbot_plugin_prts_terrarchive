@@ -138,3 +138,27 @@ def test_path_safety(tmp_path):
     with pytest.raises(Exception):
         validate_safe_relative_path(str(tmp_path), "a/../../escape.jsonl")
     assert validate_safe_relative_path(str(tmp_path), "shards/00000.jsonl.gz")
+
+def test_short_literal_scan_scoped_to_candidate_shards(fixture_data):
+    """document_ids 给定时短字面量只扫描候选文档所在分片，结果仍包含该文档。"""
+    from prts_corpus.store import CorpusStore
+
+    instance = CorpusStore(fixture_data["releases_dir"])
+    run(instance.ready())
+    instance.unstable_chars = {"(": "("}
+    document_id = fixture_data["expected"]["document_ids"]["operator_record"]
+    location = instance.documents[document_id]
+    pack_id = location["pack_id"]
+    shard_path = location["shard_path"]
+
+    calls = []
+    original = instance._read_packed
+
+    async def spy(pack, path, release_id=None, descriptor=None):
+        calls.append((pack, path))
+        return await original(pack, path, release_id, descriptor)
+
+    instance._read_packed = spy
+    found = run(instance.find_documents_by_short_literal("凯", document_ids=[document_id]))
+    assert calls == [(pack_id, shard_path)]
+    assert document_id in found

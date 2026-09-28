@@ -47,6 +47,11 @@
     "default": false,
     "description": "启动时若未安装语料则自动下载最新版本"
   },
+  "search_timeout_seconds": {
+    "type": "int",
+    "default": 60,
+    "description": "单次 prts_search 的时间预算（秒，范围 10-600）；单核或低配 VPS 冷启动较慢时可调大"
+  },
   "enable_search_tool": { "type": "bool", "default": true, "description": "注册 prts_search 工具" },
   "enable_read_tool": { "type": "bool", "default": true, "description": "注册 prts_read 工具" },
   "enable_timeline_tool": { "type": "bool", "default": true, "description": "注册 prts_timeline 工具" },
