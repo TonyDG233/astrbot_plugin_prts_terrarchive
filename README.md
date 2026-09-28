@@ -75,8 +75,10 @@ PRTS 泰拉档案（`astrbot_plugin_prts_terrarchive`）是面向 [AstrBot](http
 | `releases_dir` | string | `""` | 语料存储目录。留空时使用标准路径 `data/plugin_data/astrbot_plugin_prts_terrarchive/releases`。 |
 | `site_base_url` | string | `https://prts.chat` | 官方元数据与备用下载源站点地址。可信元数据始终以此为基准校验。 |
 | `download_order` | list | `["modelscope", "site"]` | 下载源优先级列表。优先从首选源拉取分片，遇到网络异常时自动降级到下一源。 |
+| `metadata_source` | string | `"auto"` | 可信元数据来源：`site`=仅 prts.chat；`mirror`=仅 ModelScope 镜像（海外 VPS 适用）；`auto`=优先 prts.chat，网络不可达时自动回退 ModelScope 镜像。镜像模式的 `data_version` 为本地按同一公式重算值，官方声明值记录在 `mirror_declared_data_version`。 |
 | `pinned_release` | string | `""` | 固定使用的版本号（release_id）。设置且本地已存在该版本时，启动时不进行联网请求，实现绝对零联网纯离线运行。 |
 | `auto_check_update` | bool | `false` | 启动后是否在后台静默检查远端是否有新版本语料（仅提示，不自动下载与切换）。 |
+| `auto_update` | bool | `false` | 检测到新语料时自动下载并激活（后台按 6 小时周期检查）；开始/完成/失败状态写入 AstrBot 主日志。开启后无需另开 `auto_check_update`。 |
 | `auto_install_on_start`| bool | `false` | 启动时若检测到本地未安装任何语料包，是否自动下载并安装最新版本。 |
 | `enable_search_tool` | bool | `true` | 是否向 LLM 注册 `prts_search` 检索工具。 |
 | `enable_read_tool` | bool | `true` | 是否向 LLM 注册 `prts_read` 阅读工具。 |
@@ -152,7 +154,7 @@ PRTS 泰拉档案（`astrbot_plugin_prts_terrarchive`）是面向 [AstrBot](http
 A: 说明本地尚未下载语料包。请先使用管理员账号发送命令 `/prts 更新`。若当前处于纯离线环境，请手动将构建好的 release 文件夹放置于 `data/plugin_data/astrbot_plugin_prts_terrarchive/releases` 并包含有效的 `current.json`。
 
 ### Q2: 下载语料包时网络超时或失败？
-A: 插件默认配置了双下载源。若 ModelScope 访问不稳定，可在管理台调整 `download_order` 配置或检查服务器到 `prts.chat` 的网络连通性。也可以手动下载语料压缩包解压至数据目录。
+A: 插件默认配置了双下载源。若 ModelScope 访问不稳定，可在管理台调整 `download_order` 配置或检查服务器到 `prts.chat` 的网络连通性。也可以手动下载语料压缩包解压至数据目录。海外服务器若无法访问 `prts.chat` 域名，保持 `metadata_source` 为默认 `auto` 即可自动改用 ModelScope 元数据回退（也可显式设为 `mirror`）。
 
 ### Q3: 磁盘空间与内存占用如何？
 A: 完整语料包（明日方舟 + 终末地双游戏）占用磁盘约 300MB ~ 800MB（根据是否包含多语言包而定）。运行期正文与索引均采用 LRU 内存分片缓存，分别受 `content_cache_mb`（默认 64MB）与 `index_cache_mb`（默认 32MB）严格限制，对小内存服务器极其友好。

@@ -1070,28 +1070,30 @@ async def fetch_json(
     url: str,
     signal: Any = None,
     timeout_seconds: float = MANIFEST_TIMEOUT_SECONDS,
+    label: str = "",
 ) -> Any:
-    """请求 JSON 清单，实施超时与有界响应截断。"""
+    """请求 JSON 清单，实施超时与有界响应截断。label 用于错误信息定位阶段。"""
     if _is_aborted(signal):
         raise InstallerFault("CANCELLED", "资料下载已取消")
 
+    stage = f"（{label}）" if label else ""
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     parsed = urlsplit(url)
     try:
         async with session.get(url, allow_redirects=False, timeout=timeout) as response:
             if response.status in (301, 302, 303, 307, 308):
-                raise InstallerFault("DOWNLOAD_FAILED", f"清单请求重定向被禁止: {url}")
+                raise InstallerFault("DOWNLOAD_FAILED", f"清单请求重定向被禁止：{url}{stage}")
             if response.status != 200:
                 code = "RELEASE_NOT_FOUND" if response.status == 404 else (
                     "ACCESS_DENIED" if response.status == 403 else "DOWNLOAD_FAILED"
                 )
-                raise InstallerFault(code, f"请求失败 HTTP {response.status}: {url}")
+                raise InstallerFault(code, f"请求失败 HTTP {response.status}：{url}{stage}")
 
             content_length_str = response.headers.get("Content-Length")
             if content_length_str and content_length_str.isdigit():
                 declared = int(content_length_str)
                 if declared > MAX_MANIFEST_BYTES:
-                    raise InstallerFault("INVALID_MANIFEST", f"清单超过大小上限（{MAX_MANIFEST_BYTES} 字节）: {url}")
+                    raise InstallerFault("INVALID_MANIFEST", f"清单超过大小上限（{MAX_MANIFEST_BYTES} 字节）：{url}{stage}")
 
             received = 0
             chunks = bytearray()
@@ -1100,21 +1102,28 @@ async def fetch_json(
                     raise InstallerFault("CANCELLED", "资料下载已取消")
                 received += len(chunk)
                 if received > MAX_MANIFEST_BYTES:
-                    raise InstallerFault("INVALID_MANIFEST", f"响应超过大小上限（{MAX_MANIFEST_BYTES} 字节）: {url}")
+                    raise InstallerFault("INVALID_MANIFEST", f"响应超过大小上限（{MAX_MANIFEST_BYTES} 字节）：{url}{stage}")
                 chunks.extend(chunk)
 
             try:
                 return json.loads(chunks.decode("utf-8"))
             except Exception:
-                raise InstallerFault("INVALID_MANIFEST", f"返回的不是有效 JSON: {url}")
+                raise InstallerFault("INVALID_MANIFEST", f"返回的不是有效 JSON：{url}{stage}")
     except asyncio.TimeoutError:
-        raise InstallerFault("DOWNLOAD_FAILED", f"连接 {parsed.netloc} 超时（{int(timeout_seconds)}s）")
+        fault = InstallerFault(
+            "DOWNLOAD_FAILED",
+            f"连接 {parsed.netloc} 超时（{int(timeout_seconds)}s）{stage}：{url}",
+        )
+        fault.network = True
+        raise fault
     except InstallerFault:
         raise
     except Exception as err:
         if _is_aborted(signal):
             raise InstallerFault("CANCELLED", "资料下载已取消")
-        raise InstallerFault("DOWNLOAD_FAILED", f"无法连接 {parsed.netloc}（{err}）")
+        fault = InstallerFault("DOWNLOAD_FAILED", f"无法连接 {parsed.netloc}（{err}）{stage}：{url}")
+        fault.network = True
+        raise fault
 
 
 def safe_download_redirect(next_url: SplitResult, initial_url: SplitResult) -> bool:
@@ -1389,7 +1398,310 @@ def validate_mirror_descriptors(
     return accepted
 
 
+MODELSCOPE_MIRROR_REPOS = (MODELSCOPE_REPOS["arknights"], MODELSCOPE_REPOS["endfield"])
+# 镜像基址独立成常量，便于测试注入本地 mock 服务（生产固定为官方域名）。
+MODELSCOPE_BASE_URL = "https://modelscope.cn"
+MIRROR_DATASET_KIND = "prts-agent-modelscope-dataset-mirror"
+_MIRROR_ASSET_CATEGORIES = ("shards", "search-index", "catalog", "localization")
+
+
+async def _mirror_tree_files(session: aiohttp.ClientSession, repo: str, signal: Any) -> list[dict[str, Any]]:
+    url = f"{MODELSCOPE_BASE_URL}/api/v1/datasets/{repo}/repo/tree?Revision=master&Root=%2Freleases"
+    payload = await fetch_json(session, url, signal=signal, label=f"镜像目录 {repo}")
+    files = ((payload or {}).get("Data") or {}).get("Files") if isinstance(payload, dict) else None
+    if not isinstance(files, list):
+        raise InstallerFault("INVALID_MANIFEST", f"ModelScope 目录响应无效: {repo}")
+    return files
+
+
+async def _mirror_choose_release(
+    session: aiohttp.ClientSession, repos: Sequence[str], signal: Any, expected_release_id: str | None
+) -> str:
+    if expected_release_id:
+        if not release_id_valid(expected_release_id):
+            raise InstallerFault("INVALID_REQUEST", "releaseId 非法")
+        return expected_release_id
+    per_repo: dict[str, list[tuple[int, str]]] = {}
+    for repo in repos:
+        candidates: list[tuple[int, str]] = []
+        for item in await _mirror_tree_files(session, repo, signal):
+            name = str(item.get("Name") or "")
+            if item.get("Type") == "tree" and name.startswith("agent-corpus-") and release_id_valid(name):
+                candidates.append((int(item.get("CommittedDate") or 0), name))
+        if not candidates:
+            raise InstallerFault("INVALID_MANIFEST", f"ModelScope 镜像缺少可用 release 目录: {repo}")
+        per_repo[repo] = candidates
+    common = None
+    for candidates in per_repo.values():
+        names = {name for _, name in candidates}
+        common = names if common is None else (common & names)
+    if not common:
+        raise InstallerFault("INVALID_MANIFEST", "ModelScope 两个镜像仓库没有共同的 release")
+    newest = max(ts_name for candidates in per_repo.values() for ts_name in candidates if ts_name[1] in common)
+    return newest[1]
+
+
+def _mirror_dataset_manifest_url(repo: str, release_id: str) -> str:
+    return f"{MODELSCOPE_BASE_URL}/datasets/{repo}/resolve/master/releases/{release_id}/dataset-manifest.json"
+
+
+async def resolve_mirror_current_release(
+    session: aiohttp.ClientSession | None = None,
+    signal: Any = None,
+    release_id: str | None = None,
+    enabled_games: Sequence[str] | None = None,
+    fallback_reason: str = "",
+) -> dict[str, Any]:
+    """纯 ModelScope 元数据回退：树 API 选版 + dataset-manifest 逐文件哈希 + pack 清单合成 release 摘要。
+
+    信任差异：prts.chat 不可达（如海外 VPS）时以 ModelScope 官方镜像仓库的
+    dataset-manifest.json 作为逐文件 sha256 锚点，并由各 pack-manifest 合成
+    release 摘要（content_tree_sha256 = data_version）。仍执行全部结构校验与
+    逐文件哈希校验，但可信根从 prts.chat 变为镜像仓库发布者。
+    """
+    repos = list(MODELSCOPE_MIRROR_REPOS)
+    async with _ensure_session(session) as s:
+        target = await _mirror_choose_release(s, repos, signal, release_id)
+        datasets: dict[str, dict[str, Any]] = {}
+        for repo in repos:
+            payload = await fetch_json(
+                s, _mirror_dataset_manifest_url(repo, target), signal=signal, label=f"镜像元数据 {repo}"
+            )
+            if (
+                not isinstance(payload, dict)
+                or payload.get("kind") != MIRROR_DATASET_KIND
+                or payload.get("release_id") != target
+                or not SHA256_PATTERN.match(str(payload.get("data_version") or ""))
+                or not isinstance(payload.get("pack_ids"), list)
+                or not isinstance(payload.get("files"), dict)
+            ):
+                raise InstallerFault("INVALID_MANIFEST", f"ModelScope dataset-manifest 无效: {repo}")
+            datasets[repo] = payload
+
+        versions = {str(dataset["data_version"]) for dataset in datasets.values()}
+        if len(versions) != 1:
+            raise InstallerFault("INVALID_MANIFEST", "ModelScope 两个镜像仓库 data_version 不一致")
+        declared_data_version = versions.pop()
+        root_source_snapshot = f"modelscope-mirror-{target}"
+
+        prefix = f"releases/{target}/"
+        pack_to_repo: dict[str, str] = {}
+        pack_ids: list[str] = []
+        for repo, dataset in datasets.items():
+            for raw_pack_id in dataset["pack_ids"]:
+                pack_id = str(raw_pack_id or "")
+                if pack_id not in PACK_IDS or _require_pack_id(pack_id, "INVALID_MANIFEST") != pack_id:
+                    raise InstallerFault("INVALID_MANIFEST", f"镜像 pack 非法: {pack_id}")
+                pack_to_repo[pack_id] = repo
+                if pack_id not in pack_ids:
+                    pack_ids.append(pack_id)
+
+        noted_paths: set[str] = set()
+        dataset_hashes: dict[str, str] = {}
+        for repo, dataset in datasets.items():
+            for path, meta in dataset["files"].items():
+                if not isinstance(path, str) or not path.startswith(prefix):
+                    raise InstallerFault("INVALID_MANIFEST", f"镜像文件路径越界: {path}")
+                relative = path[len(prefix):]
+                parts = relative.split("/")
+                if len(parts) != 3 or parts[1] not in _MIRROR_ASSET_CATEGORIES:
+                    continue  # 跳过 pack-manifest.json / bundles 等非资源条目
+                if not isinstance(meta, dict) or not SHA256_PATTERN.match(str(meta.get("sha256") or "")):
+                    raise InstallerFault("INVALID_MANIFEST", f"镜像文件元数据非法: {path}")
+                size = meta.get("size")
+                if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                    raise InstallerFault("INVALID_MANIFEST", f"镜像文件大小非法: {path}")
+                if relative in noted_paths:
+                    raise InstallerFault("INVALID_MANIFEST", f"ModelScope 镜像包含重复资源路径: {relative}")
+                noted_paths.add(relative)
+                dataset_hashes[relative] = str(meta["sha256"])
+
+        mirrors = [
+            {
+                "provider": "modelscope",
+                "repo_id": repo,
+                "revision": "master",
+                "pack_ids": [p for p in dataset["pack_ids"] if p in pack_to_repo],
+                "base_url": f"{MODELSCOPE_BASE_URL}/datasets/{repo}/resolve/master/releases/{target}/",
+            }
+            for repo, dataset in datasets.items()
+        ]
+
+        pack_manifests: dict[str, dict[str, Any]] = {}
+        descriptors: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
+        pack_hashes: dict[str, str] = {}
+        totals = {"assets": 0, "compressed": 0, "uncompressed": 0, "documents": 0, "lines": 0}
+        compiler_version = ""
+        has_localization = False
+        for pack_id in pack_ids:
+            repo = pack_to_repo[pack_id]
+            url = (
+                f"{MODELSCOPE_BASE_URL}/datasets/{repo}/resolve/master/releases/{target}/"
+                f"{pack_id}/pack-manifest.json"
+            )
+            pack = await fetch_json(s, url, signal=signal, label=f"镜像 pack {pack_id}")
+            if not isinstance(pack, dict):
+                raise InstallerFault("INVALID_MANIFEST", f"镜像 pack-manifest 无效: {pack_id}")
+            assets = validate_pack_manifest(pack_id, pack, None, totals)
+            pack_manifests[pack_id] = pack
+            descriptors.append(
+                normalize_pack_descriptor(
+                    {
+                        "pack_id": pack_id,
+                        "manifest_path": f"{pack_id}/pack-manifest.json",
+                        "authority": str(pack.get("authority") or "official"),
+                        "data_version": str(pack.get("data_version") or ""),
+                        "document_count": pack.get("document_count"),
+                        "line_count": pack.get("line_count"),
+                        "compressed_size": pack.get("compressed_size"),
+                        "uncompressed_size": pack.get("uncompressed_size"),
+                        "shard_count": len(assets),
+                    },
+                    "mirror",
+                )
+            )
+            for asset in assets:
+                asset_path = str(asset.get("path") or "")
+                relative = f"{pack_id}/{asset_path}"
+                if relative not in noted_paths:
+                    raise InstallerFault("INVALID_MANIFEST", f"pack 资源未在镜像清单中登记: {relative}")
+                pack_hashes[relative] = str(asset["sha256"])
+                entries.append(
+                    {
+                        "relative_path": relative,
+                        "size": asset["compressed_size"],
+                        "sha256": str(asset["sha256"]),
+                    }
+                )
+            if pack.get("localization"):
+                has_localization = True
+            compiler_version = compiler_version or str(pack.get("compiler_version") or "")
+
+        # 信任锚点（镜像模式）：dataset-manifest 与 pack 清单必须逐文件哈希完全一致。
+        if dataset_hashes != pack_hashes:
+            raise InstallerFault("INVALID_MANIFEST", "镜像 dataset-manifest 与 pack 逐文件哈希不一致")
+
+        minimum_agent_version = "0.2.0" if has_localization else "0.0.0"
+        effective_compiler_version = compiler_version or "mirror-modelscope"
+
+        # 镜像模式没有 PRTS.chat 的 release-manifest（原 source_snapshot 不可知），
+        # 因此按 validate_trusted_release_root 的同一公式本地重算内容根作为 data_version；
+        # 官方声明值仅作追溯字段。真正的信任锚点是上面 dataset 与 pack 的逐文件哈希一致性。
+        root_packs: list[dict[str, Any]] = []
+        for descriptor in descriptors:
+            pack = pack_manifests[descriptor["pack_id"]]
+            pack_item: dict[str, Any] = {
+                "pack_id": descriptor["pack_id"],
+                "data_version": pack["data_version"],
+                "authority": str(pack.get("authority") or "official"),
+                "shards": [
+                    {"path": asset["path"], "sha256": asset["sha256"]} for asset in pack["shards"]
+                ],
+                "search_index_shards": [
+                    {"path": asset["path"], "sha256": asset["sha256"]}
+                    for asset in (pack.get("search_index") or {}).get("shards") or []
+                ],
+            }
+            if pack.get("document_catalog"):
+                pack_item["document_catalog"] = {
+                    "path": pack["document_catalog"]["path"],
+                    "sha256": pack["document_catalog"]["sha256"],
+                }
+            if pack.get("localization"):
+                pack_item["localization"] = pack["localization"]
+            root_packs.append(pack_item)
+        data_version = sha256_hex(
+            canonical_json(
+                {
+                    "compiler_version": effective_compiler_version,
+                    "source_snapshot": root_source_snapshot,
+                    "packs": root_packs,
+                }
+            )
+        )
+
+        release_manifest = {
+            "algorithm": RELEASE_ALGORITHM,
+            "schema_version": 1,
+            "release_id": target,
+            "data_version": data_version,
+            "corpus_version": data_version,
+            "content_tree_sha256": data_version,
+            "mirror_declared_data_version": declared_data_version,
+            "compiler_version": effective_compiler_version,
+            "source_update_id": f"local-snapshot:{root_source_snapshot}",
+            "minimum_agent_version": minimum_agent_version,
+            "required_packs": sorted(pack_ids),
+            "document_count": totals["documents"],
+            "line_count": totals["lines"],
+            "compressed_size": totals["compressed"],
+            "uncompressed_size": totals["uncompressed"],
+            "packs": descriptors,
+        }
+        validate_release_totals(release_manifest, totals)
+        validate_trusted_release_root(release_manifest, pack_manifests)
+
+        res = {
+            "release_id": target,
+            "releaseId": target,
+            "data_version": data_version,
+            "dataVersion": data_version,
+            "minimum_agent_version": minimum_agent_version,
+            "minimumAgentVersion": minimum_agent_version,
+            "document_count": totals["documents"],
+            "documentCount": totals["documents"],
+            "line_count": totals["lines"],
+            "lineCount": totals["lines"],
+            "compressed_size": totals["compressed"],
+            "compressedSize": totals["compressed"],
+            "uncompressed_size": totals["uncompressed"],
+            "uncompressedSize": totals["uncompressed"],
+            "packs": descriptors,
+            "mirrors": mirrors,
+            "entries": entries,
+            "release_manifest": release_manifest,
+            "pack_manifests": pack_manifests,
+            "mirror_snapshot": True,
+            "metadata_source": "mirror",
+        }
+        if fallback_reason:
+            res["fallback_reason"] = fallback_reason
+        _trusted_current_snapshots[id(res)] = dict(res)
+        return res
+
+
 async def resolve_trusted_current_release(
+    session: aiohttp.ClientSession | None = None,
+    site_base_url: str | None = None,
+    signal: Any = None,
+    metadata_source: str = "auto",
+    release_id: str | None = None,
+    enabled_games: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """按 metadata_source 解析可信快照：site（仅 prts.chat）/ mirror（仅 ModelScope）/ auto（先 site，网络不可达时回退 mirror）。"""
+    source = str(metadata_source or "auto").lower()
+    if source not in ("site", "mirror", "auto"):
+        raise InstallerFault("INVALID_REQUEST", "metadata_source 仅支持 site | mirror | auto")
+    if source == "mirror":
+        return await resolve_mirror_current_release(
+            session=session, signal=signal, release_id=release_id, enabled_games=enabled_games
+        )
+    try:
+        return await _resolve_site_current_release(session=session, site_base_url=site_base_url, signal=signal)
+    except InstallerFault as err:
+        if source == "auto" and getattr(err, "network", False):
+            return await resolve_mirror_current_release(
+                session=session,
+                signal=signal,
+                release_id=release_id,
+                enabled_games=enabled_games,
+                fallback_reason=str(err),
+            )
+        raise
+
+
+async def _resolve_site_current_release(
     session: aiohttp.ClientSession | None = None,
     site_base_url: str | None = None,
     signal: Any = None,
@@ -1409,7 +1721,27 @@ async def resolve_trusted_current_release(
             trusted_origin = normalized_site
 
     async with _ensure_session(session) as s:
-        payload = await fetch_json(s, f"{trusted_origin}/api/agent/data/releases/current", signal=signal)
+        # 可信元数据是更新链路的唯一入口：超时/瞬时网络错误重试一次，
+        # 并把失败阶段写进错误信息，便于在生产日志中定位。
+        payload = None
+        last_error: InstallerFault | None = None
+        for attempt in (1, 2):
+            try:
+                payload = await fetch_json(
+                    s,
+                    f"{trusted_origin}/api/agent/data/releases/current",
+                    signal=signal,
+                    label="可信元数据 current",
+                )
+                break
+            except InstallerFault as err:
+                if err.code in ("CANCELLED", "INVALID_MANIFEST", "ACCESS_DENIED", "RELEASE_NOT_FOUND"):
+                    raise
+                last_error = err
+                if attempt == 1:
+                    await asyncio.sleep(1.0)
+        if payload is None:
+            raise last_error or InstallerFault("DOWNLOAD_FAILED", "可信元数据请求失败")
         data = payload.get("data") if isinstance(payload, dict) else None
         if not data or not isinstance(data, dict):
             raise InstallerFault("INVALID_MANIFEST", "PRTS.chat current 响应缺少 data 字段")
@@ -1488,7 +1820,7 @@ def modelscope_asset_url(
         base_url = mirror_base_url
     else:
         repo = MODELSCOPE_REPOS[group]
-        base_url = f"https://modelscope.cn/datasets/{repo}/resolve/master/releases/{source_release_id}/"
+        base_url = f"{MODELSCOPE_BASE_URL}/datasets/{repo}/resolve/master/releases/{source_release_id}/"
     return urljoin(base_url, relative_path)
 
 
@@ -1503,6 +1835,18 @@ async def load_trusted_release_metadata(
     if not current or current.get("release_id") != release_id:
         raise InstallerFault("INVALID_REQUEST", "远程 release 必须由同一次 PRTS.chat current 快照选定")
 
+    if current.get("mirror_snapshot"):
+        # ModelScope 回退快照已在解析阶段完成 pack 校验与 release 摘要合成，
+        # 不再从 prts.chat 拉取任何清单。
+        return {
+            "release_id": release_id,
+            "data_version": current["data_version"],
+            "release_manifest": current["release_manifest"],
+            "pack_manifests": current["pack_manifests"],
+            "entries": current["entries"],
+            "mirrors": current.get("mirrors", []),
+        }
+
     trusted_base = DEFAULT_SITE_BASE_URL
     if site_base_url is not None:
         norm = normalize_site_base_url(site_base_url)
@@ -1513,7 +1857,9 @@ async def load_trusted_release_metadata(
     def url_for(path: str) -> str:
         return f"{trusted_base}/api/agent/data/releases/{release_id}/{path}"
 
-    release_manifest = await fetch_json(session, url_for("release-manifest.json"), signal=signal)
+    release_manifest = await fetch_json(
+        session, url_for("release-manifest.json"), signal=signal, label="release-manifest",
+    )
     descriptors = validate_release_header(release_id, release_manifest)
 
     fields = [
@@ -1542,7 +1888,9 @@ async def load_trusted_release_metadata(
     entries = []
 
     for pack_id, descriptor in descriptors.items():
-        pack = await fetch_json(session, url_for(descriptor["manifest_path"]), signal=signal)
+        pack = await fetch_json(
+            session, url_for(descriptor["manifest_path"]), signal=signal, label=f"pack-manifest:{pack_id}",
+        )
         assets = validate_pack_manifest(pack_id, pack, descriptor, totals)
         pack_manifests[pack_id] = pack
         for asset in assets:
@@ -1664,6 +2012,7 @@ async def ensure_corpus_release(
     enabled_games: Sequence[str] = ("arknights", "endfield"),
     download_order: Sequence[str] = ("modelscope", "site"),
     site_base_url: str = DEFAULT_SITE_BASE_URL,
+    metadata_source: str = "auto",
     session: aiohttp.ClientSession | None = None,
     signal: Any = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
@@ -1701,6 +2050,9 @@ async def ensure_corpus_release(
                 session=http_session,
                 site_base_url=normalized_site,
                 signal=signal,
+                metadata_source=metadata_source,
+                release_id=release_id,
+                enabled_games=enabled_games,
             )
             current_release_id = trusted_snapshot["release_id"]
             current_data_version = trusted_snapshot["data_version"]
@@ -1760,8 +2112,14 @@ async def ensure_corpus_release(
             _, release_dir = await ensure_managed_release_directory(releases_dir, target_release_id)
             loop = asyncio.get_running_loop()
             last_error: Exception | None = None
+            source_errors: list[str] = []
 
-            for source in download_order:
+            # 镜像元数据快照表示 prts.chat 不可达；此时剔除 site 源，避免再次撞超时。
+            effective_order = list(download_order)
+            if trusted_snapshot.get("mirror_snapshot"):
+                effective_order = [source for source in effective_order if source != "site"] or ["modelscope"]
+
+            for source in effective_order:
                 if _is_aborted(signal):
                     raise InstallerFault("CANCELLED", "资料下载已取消")
 
@@ -1912,5 +2270,12 @@ async def ensure_corpus_release(
                     if _is_aborted(signal):
                         raise InstallerFault("CANCELLED", "资料下载已取消")
                     last_error = err
+                    source_errors.append(f"{source}: {err}")
 
+            # 两个下载源均失败时把各自的原因一并抛出，避免只看到最后一个源的错误。
+            if last_error is not None and len(source_errors) > 1:
+                raise InstallerFault(
+                    "DOWNLOAD_FAILED",
+                    "所有下载源均失败 —— " + "；".join(source_errors),
+                )
             raise last_error or InstallerFault("DOWNLOAD_FAILED", "没有可用的下载源")

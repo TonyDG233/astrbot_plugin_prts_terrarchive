@@ -518,8 +518,12 @@ def _make_handler(plugin, impl):
     return handler
 
 
-def make_tools(plugin, module_path: str) -> list[FunctionTool]:
-    """按配置构造启用的 FunctionTool；module_path 为插件 main 模块路径。"""
+def make_tools(plugin, module_path: str, tool_cls: type = FunctionTool) -> list[FunctionTool]:
+    """按配置构造启用的 FunctionTool；module_path 为插件 main 模块路径。
+
+    tool_cls 由 main.py 传入本插件内定义的 FunctionTool 子类：AstrBot 通过
+    tool.__module__ 解析归属模块，子类定义在插件主模块才能被正确回收。
+    """
     descriptions = {
         constants.TOOL_SEARCH: SEARCH_DESCRIPTION,
         constants.TOOL_READ: READ_DESCRIPTION,
@@ -537,7 +541,7 @@ def make_tools(plugin, module_path: str) -> list[FunctionTool]:
         if not _setting(plugin, _ENABLE_FLAGS[name], True):
             continue
         tools.append(
-            FunctionTool(
+            tool_cls(
                 name=name,
                 description=descriptions[name],
                 parameters=parameters[name],

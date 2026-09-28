@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import AstrBotConfig, FunctionTool, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
@@ -59,8 +59,10 @@ DEFAULT_SETTINGS = {
     "releases_dir": "",
     "site_base_url": constants.DEFAULT_SITE_BASE_URL,
     "download_order": ["modelscope", "site"],
+    "metadata_source": "auto",
     "pinned_release": "",
     "auto_check_update": False,
+    "auto_update": False,
     "auto_install_on_start": False,
     "enable_search_tool": True,
     "enable_read_tool": True,
@@ -111,10 +113,13 @@ def _normalize_settings(config) -> dict:
         except (TypeError, ValueError):
             settings[key] = DEFAULT_SETTINGS[key]
     settings["site_base_url"] = str(settings["site_base_url"] or "").strip() or constants.DEFAULT_SITE_BASE_URL
+    settings["metadata_source"] = str(settings["metadata_source"] or "auto").strip().lower()
+    if settings["metadata_source"] not in ("auto", "site", "mirror"):
+        settings["metadata_source"] = "auto"
     settings["pinned_release"] = str(settings["pinned_release"] or "").strip()
     settings["releases_dir"] = str(settings["releases_dir"] or "").strip()
     for key in (
-        "auto_check_update", "auto_install_on_start", "enable_search_tool", "enable_read_tool",
+        "auto_check_update", "auto_update", "auto_install_on_start", "enable_search_tool", "enable_read_tool",
         "enable_timeline_tool", "enable_i18n_tool", "inject_entity_context", "command_enabled",
     ):
         settings[key] = bool(settings[key])
@@ -125,6 +130,11 @@ def _fault_text(error: Exception) -> str:
     if isinstance(error, (InstallerFault, ContractError)):
         return f"{error.code}: {error.message}"
     return str(error)
+
+
+class _PrtsFunctionTool(FunctionTool):
+    """在本插件主模块中定义：AstrBot 以 tool.__module__ 解析工具归属，
+    只有归属到插件模块路径的工具才会在卸载/停用时被自动回收。"""
 
 
 class PrtsArchive(Star):
@@ -138,7 +148,13 @@ class PrtsArchive(Star):
         )
         self.settings = _normalize_settings(config)
         self.module_path = type(self).__module__
-        data_dir = StarTools.get_data_dir(self.plugin_name)
+        # AstrBot 卸载时按 root_dir_name（插件目录名）删除 data/plugin_data/<dir>；
+        # 使用目录名存放语料才能随“清除插件数据”一并回收，避免残留。
+        data_dir_name = (
+            (getattr(metadata, "root_dir_name", None) if metadata else None)
+            or self.plugin_name
+        )
+        data_dir = StarTools.get_data_dir(data_dir_name)
         self.plugin_data_dir = Path(data_dir)
         releases_dir = (
             Path(self.settings["releases_dir"]) if self.settings["releases_dir"]
@@ -163,7 +179,10 @@ class PrtsArchive(Star):
             return
         self._started = True
         try:
-            self.context.add_llm_tools(*prts_tools.make_tools(self, self.module_path))
+            self._remove_stale_tools()
+            self.context.add_llm_tools(
+                *prts_tools.make_tools(self, self.module_path, tool_cls=_PrtsFunctionTool)
+            )
         except Exception as error:
             logger.error(f"[prts] 注册 LLM 工具失败：{error}", exc_info=True)
         try:
@@ -175,7 +194,7 @@ class PrtsArchive(Star):
             )
         except Exception as error:
             self.logger.warning(f"[prts] 本地语料未就绪（{_fault_text(error)}），请执行 /prts 更新")
-        if self.settings["auto_check_update"]:
+        if self.settings["auto_check_update"] or self.settings["auto_update"]:
             self._tasks.append(asyncio.create_task(self._release_watch_loop()))
         if self.settings["auto_install_on_start"] and self.store.data_version is None:
             self._tasks.append(asyncio.create_task(self._auto_install()))
@@ -194,6 +213,24 @@ class PrtsArchive(Star):
             await self._session.close()
         self._session = None
         self.store.reset()
+
+    def _remove_stale_tools(self) -> None:
+        """清理同名残留工具：旧版本注册归属错误时 unload 无法回收，这里显式兜底。"""
+        tool_set = getattr(getattr(self.context, "provider_manager", None), "llm_tools", None)
+        names = {
+            constants.TOOL_SEARCH,
+            constants.TOOL_READ,
+            constants.TOOL_TIMELINE,
+            constants.TOOL_I18N,
+        }
+        if tool_set is None:
+            return
+        for tool in list(getattr(tool_set, "func_list", [])):
+            if getattr(tool, "name", None) in names:
+                try:
+                    tool_set.remove_func(tool.name)
+                except Exception as error:
+                    logger.debug(f"[prts] 清理旧工具失败 {tool.name}: {error}")
 
     # ---- LLM 请求注入 ----
 
@@ -230,7 +267,10 @@ class PrtsArchive(Star):
         if aiohttp is None:
             raise InstallerFault("DEPENDENCY_MISSING", "缺少 aiohttp 依赖，请先安装 requirements.txt")
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None))
+            # trust_env=True：继承服务器 HTTP(S)_PROXY，便于受限网络环境部署。
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=None), trust_env=True
+            )
         return self._session
 
     async def _release_watch_loop(self) -> None:
@@ -239,14 +279,21 @@ class PrtsArchive(Star):
             try:
                 session = await self._http_session()
                 current = await prts_installer.resolve_trusted_current_release(
-                    session=session, site_base_url=self.settings["site_base_url"]
+                    session=session,
+                    site_base_url=self.settings["site_base_url"],
+                    metadata_source=self.settings["metadata_source"],
                 )
                 remote = str(current.get("data_version") or current.get("dataVersion") or "")
                 if remote and remote != getattr(self.store, "data_version", None):
                     self.logger.info(
-                        "[prts] 检测到语料更新（远端 %s / 本地 %s）；执行 /prts 更新 应用。",
-                        remote[:12], str(getattr(self.store, "data_version", "") or "(未安装)")[:12],
+                        "[prts] 检测到语料更新：远端 %s（%s）/ 本地 %s%s",
+                        current.get("release_id") or "",
+                        remote[:12],
+                        str(getattr(self.store, "data_version", "") or "(未安装)")[:12],
+                        "，开始自动更新。" if self.settings["auto_update"] else "；执行 /prts 更新 应用。",
                     )
+                    if self.settings["auto_update"]:
+                        await self._auto_update_once()
             except asyncio.CancelledError:
                 raise
             except Exception as error:
@@ -258,6 +305,23 @@ class PrtsArchive(Star):
         except Exception as error:
             self.logger.warning(f"[prts] 自动安装失败：{_fault_text(error)}")
 
+    async def _auto_update_once(self) -> None:
+        """auto_update 开启时应用检查到的新语料，状态写入 AstrBot 主日志。"""
+        try:
+            self.logger.info("[prts] 自动更新开始……")
+            result = await self._run_update(release_id="")
+            self.logger.info(
+                "[prts] 自动更新完成：release=%s data_version=%s 下载 %.1f MiB / 复用 %.1f MiB。",
+                result.get("release_id"),
+                str(result.get("data_version") or "")[:12],
+                int(result.get("downloaded_bytes") or 0) / 1048576,
+                int(result.get("skipped_bytes") or 0) / 1048576,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.logger.error(f"[prts] 自动更新失败：{_fault_text(error)}", exc_info=True)
+
     async def _run_update(self, release_id: str, progress=None) -> dict:
         session = await self._http_session()
         async with self._install_lock:
@@ -267,6 +331,7 @@ class PrtsArchive(Star):
                 enabled_games=self.settings["enabled_games"],
                 download_order=self.settings["download_order"],
                 site_base_url=self.settings["site_base_url"],
+                metadata_source=self.settings["metadata_source"],
                 session=session,
                 on_progress=progress,
             )
@@ -313,7 +378,9 @@ class PrtsArchive(Star):
         try:
             session = await self._http_session()
             current = await prts_installer.resolve_trusted_current_release(
-                session=session, site_base_url=self.settings["site_base_url"]
+                session=session,
+                site_base_url=self.settings["site_base_url"],
+                metadata_source=self.settings["metadata_source"],
             )
         except Exception as error:
             yield event.plain_result(f"检查更新失败：{_fault_text(error)}")
@@ -348,6 +415,7 @@ class PrtsArchive(Star):
         try:
             result = await self._run_update(target, progress=on_progress)
         except Exception as error:
+            self.logger.error(f"[prts] 更新失败：{_fault_text(error)}", exc_info=True)
             yield event.plain_result(f"更新失败：{_fault_text(error)}")
             return
         if result.get("reused"):

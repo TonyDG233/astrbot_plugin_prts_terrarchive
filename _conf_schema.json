@@ -21,6 +21,12 @@
     "default": ["modelscope", "site"],
     "description": "下载源优先级；任一源失败自动切换下一源"
   },
+  "metadata_source": {
+    "type": "string",
+    "options": ["auto", "site", "mirror"],
+    "default": "auto",
+    "description": "可信元数据来源：site=仅 prts.chat；mirror=仅 ModelScope 镜像（海外 VPS 用）；auto=优先 prts.chat，网络不可达时自动回退 ModelScope 镜像"
+  },
   "pinned_release": {
     "type": "string",
     "default": "",
@@ -30,6 +36,11 @@
     "type": "bool",
     "default": false,
     "description": "启动后后台检查更新（仅提示，不影响本地检索）"
+  },
+  "auto_update": {
+    "type": "bool",
+    "default": false,
+    "description": "检测到新语料时自动下载并激活；开始/完成/失败状态写入 AstrBot 主日志（开启后无需另开 auto_check_update）"
   },
   "auto_install_on_start": {
     "type": "bool",
