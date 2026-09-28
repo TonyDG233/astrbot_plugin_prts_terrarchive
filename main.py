@@ -274,8 +274,11 @@ class PrtsArchive(Star):
         return self._session
 
     async def _release_watch_loop(self) -> None:
+        # 启动后 1 分钟先检查一次，之后按 6 小时周期轮询。
+        delay = 60
         while True:
-            await asyncio.sleep(RELEASE_WATCH_INTERVAL_SECONDS)
+            await asyncio.sleep(delay)
+            delay = RELEASE_WATCH_INTERVAL_SECONDS
             try:
                 session = await self._http_session()
                 current = await prts_installer.resolve_trusted_current_release(
