@@ -192,19 +192,32 @@ class PrtsArchive(Star):
             )
         except Exception as error:
             logger.error(f"[prts] 注册 LLM 工具失败：{error}", exc_info=True)
+
+        self.logger.info(
+            f"[prts] PRTS 泰拉档案插件已成功启动 (v{constants.AGENT_VERSION})，LLM 工具与管理命令已就绪。"
+        )
+
+        # 异步后台预热语料库，避免阻塞 AstrBot 插件加载与热重载主循环
+        self._tasks.append(asyncio.create_task(self._warmup_corpus()))
+
+        if self.settings["auto_check_update"] or self.settings["auto_update"]:
+            self._tasks.append(asyncio.create_task(self._release_watch_loop()))
+
+    async def _warmup_corpus(self) -> None:
+        """后台异步预热语料库，检查激活版本并按需触发自动下载。"""
         try:
             await self.store.ready()
             self.logger.info(
-                f"[prts] 本地语料已加载：release={self.store.release_id} "
+                f"[prts] 本地语料已就绪：release={self.store.release_id} "
                 f"data_version={str(self.store.data_version or '')[:12]} "
                 f"documents={len(self.store.documents)}"
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as error:
             self.logger.warning(f"[prts] 本地语料未就绪（{_fault_text(error)}），请执行 /prts 更新")
-        if self.settings["auto_check_update"] or self.settings["auto_update"]:
-            self._tasks.append(asyncio.create_task(self._release_watch_loop()))
         if self.settings["auto_install_on_start"] and self.store.data_version is None:
-            self._tasks.append(asyncio.create_task(self._auto_install()))
+            await self._auto_install()
 
     async def terminate(self) -> None:
         self._started = False
